@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Telegram credentials & Session files
+*.session
+*.session-journal
+data/*.session
+data/*.session-journal
+.env
+
+# Application databases & logs
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.log
+*.log
+
+# User local config with secret API credentials
+config.toml
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
