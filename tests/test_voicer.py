@@ -55,13 +55,15 @@ class TestFilters(unittest.TestCase):
         msg = MagicMock()
         msg.out = True
         msg.voice = MagicMock()
-        should_proc, reason, _, _ = self.engine.should_process_message(msg, None, None)
+        msg.raw_text = ""
+        should_proc, reason, _, _, _ = self.engine.should_process_message(msg, None, None)
         self.assertFalse(should_proc)
         self.assertIn("Outgoing", reason)
 
     def test_message_filtering_voice_allowed(self):
         msg = MagicMock()
         msg.out = False
+        msg.raw_text = ""
         msg.sender_id = 111222
         msg.chat_id = -222333
         attr = types.DocumentAttributeAudio(duration=15, voice=True)
@@ -75,14 +77,34 @@ class TestFilters(unittest.TestCase):
         chat = types.Chat(id=222333, title="Друзья", photo=None, participants_count=5, date=None, version=1)
         sender = types.User(id=111222, first_name="Алексей")
 
-        should_proc, reason, media_type, duration = self.engine.should_process_message(msg, chat, sender)
+        should_proc, reason, media_type, duration, existing_text = self.engine.should_process_message(msg, chat, sender)
         self.assertTrue(should_proc)
         self.assertEqual(media_type, "voice")
         self.assertEqual(duration, 15.0)
+        self.assertEqual(existing_text, "")
+
+    def test_message_filtering_skip_if_already_has_text(self):
+        msg = MagicMock()
+        msg.out = False
+        msg.raw_text = "Слушай внимательно, тут важное сообщение"
+        msg.sender_id = 111222
+        msg.chat_id = -222333
+        attr = types.DocumentAttributeAudio(duration=15, voice=True)
+        msg.voice = MagicMock(attributes=[attr])
+        msg.video_note = None
+
+        chat = types.Chat(id=222333, title="Друзья", photo=None, participants_count=5, date=None, version=1)
+        sender = types.User(id=111222, first_name="Алексей")
+
+        should_proc, reason, media_type, duration, existing_text = self.engine.should_process_message(msg, chat, sender)
+        self.assertFalse(should_proc)
+        self.assertIn("already has text", reason)
+        self.assertEqual(existing_text, "Слушай внимательно, тут важное сообщение")
 
     def test_message_filtering_ignored_user(self):
         msg = MagicMock()
         msg.out = False
+        msg.raw_text = ""
         msg.sender_id = 999888777  # Ignored user ID
         msg.chat_id = -222333
         attr = types.DocumentAttributeAudio(duration=10, voice=True)
@@ -92,7 +114,7 @@ class TestFilters(unittest.TestCase):
         chat = types.Chat(id=222333, title="Друзья", photo=None, participants_count=5, date=None, version=1)
         sender = types.User(id=999888777, first_name="Спамер")
 
-        should_proc, reason, _, _ = self.engine.should_process_message(msg, chat, sender)
+        should_proc, reason, _, _, _ = self.engine.should_process_message(msg, chat, sender)
         self.assertFalse(should_proc)
         self.assertIn("ignored_users", reason)
 

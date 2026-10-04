@@ -155,14 +155,16 @@ class FilterEngine:
         message: types.Message,
         chat: Any,
         sender: Any,
-    ) -> Tuple[bool, str, Optional[str], float]:
+    ) -> Tuple[bool, str, Optional[str], float, str]:
         """
         Detailed check for a specific message.
-        Returns (should_process, reason, media_type, duration_sec).
+        Returns (should_process, reason, media_type, duration_sec, existing_text).
         """
+        existing_text = message.raw_text.strip() if getattr(message, "raw_text", None) else ""
+
         # 1. Outgoing check
         if message.out and not self.telegram_cfg.transcribe_outgoing:
-            return False, "Outgoing message (transcribe_outgoing is false)", None, 0.0
+            return False, "Outgoing message (transcribe_outgoing is false)", None, 0.0, existing_text
 
         # 2. Media check (voice or video note)
         media_type = None
@@ -173,7 +175,7 @@ class FilterEngine:
 
         if voice_doc:
             if not self.telegram_cfg.transcribe_voice:
-                return False, "Voice notes disabled in config", None, 0.0
+                return False, "Voice notes disabled in config", None, 0.0, existing_text
             media_type = "voice"
             # Extract duration
             for attr in voice_doc.attributes:
@@ -182,7 +184,7 @@ class FilterEngine:
                     break
         elif video_note_doc:
             if not self.telegram_cfg.transcribe_video_notes:
-                return False, "Video notes disabled in config", None, 0.0
+                return False, "Video notes disabled in config", None, 0.0, existing_text
             media_type = "video_note"
             # Extract duration
             for attr in video_note_doc.attributes:
@@ -190,21 +192,25 @@ class FilterEngine:
                     duration = float(getattr(attr, "duration", 0.0))
                     break
         else:
-            return False, "Message has no voice or video note", None, 0.0
+            return False, "Message has no voice or video note", None, 0.0, existing_text
 
-        # 3. Duration check
+        # 3. Check if message already has text (caption/transcription)
+        if self.filters_cfg.skip_if_already_has_text and existing_text:
+            return False, f"Message already has text/caption: '{existing_text[:30]}'", media_type, duration, existing_text
+
+        # 4. Duration check
         if self.filters_cfg.min_duration_seconds > 0 and duration < self.filters_cfg.min_duration_seconds:
-            return False, f"Duration {duration:.1f}s < min {self.filters_cfg.min_duration_seconds}s", media_type, duration
+            return False, f"Duration {duration:.1f}s < min {self.filters_cfg.min_duration_seconds}s", media_type, duration, existing_text
 
         if self.filters_cfg.max_duration_seconds > 0 and duration > self.filters_cfg.max_duration_seconds:
-            return False, f"Duration {duration:.1f}s > max {self.filters_cfg.max_duration_seconds}s", media_type, duration
+            return False, f"Duration {duration:.1f}s > max {self.filters_cfg.max_duration_seconds}s", media_type, duration, existing_text
 
-        # 4. Chat type check
+        # 5. Chat type check
         chat_type = get_chat_type(chat) if chat else "unknown"
         if self.is_chat_type_ignored(chat_type):
-            return False, f"Chat type '{chat_type}' is in ignore_types", media_type, duration
+            return False, f"Chat type '{chat_type}' is in ignore_types", media_type, duration, existing_text
 
-        # 5. Chat Whitelist & Blacklist
+        # 6. Chat Whitelist & Blacklist
         chat_id = utils.get_peer_id(chat) if chat else message.chat_id
         chat_username = getattr(chat, "username", None) if chat else None
         chat_title = utils.get_display_name(chat) if chat else None
@@ -212,13 +218,13 @@ class FilterEngine:
         if self.filters_cfg.allowed_chats:
             matched_allowed = match_entity(chat_id, chat_username, chat_title, self.filters_cfg.allowed_chats)
             if not matched_allowed:
-                return False, "Chat is not in allowed_chats whitelist", media_type, duration
+                return False, "Chat is not in allowed_chats whitelist", media_type, duration, existing_text
 
         matched_ignored = match_entity(chat_id, chat_username, chat_title, self.filters_cfg.ignored_chats)
         if matched_ignored:
-            return False, f"Chat matches ignored_chats rule: '{matched_ignored}'", media_type, duration
+            return False, f"Chat matches ignored_chats rule: '{matched_ignored}'", media_type, duration, existing_text
 
-        # 6. Sender Whitelist & Blacklist
+        # 7. Sender Whitelist & Blacklist
         sender_id = message.sender_id
         sender_username = getattr(sender, "username", None) if sender else None
         sender_name = utils.get_display_name(sender) if sender else None
@@ -226,10 +232,10 @@ class FilterEngine:
         if self.filters_cfg.allowed_users:
             matched_user_allowed = match_entity(sender_id, sender_username, sender_name, self.filters_cfg.allowed_users)
             if not matched_user_allowed:
-                return False, "Sender is not in allowed_users whitelist", media_type, duration
+                return False, "Sender is not in allowed_users whitelist", media_type, duration, existing_text
 
         matched_user_ignored = match_entity(sender_id, sender_username, sender_name, self.filters_cfg.ignored_users)
         if matched_user_ignored:
-            return False, f"Sender matches ignored_users rule: '{matched_user_ignored}'", media_type, duration
+            return False, f"Sender matches ignored_users rule: '{matched_user_ignored}'", media_type, duration, existing_text
 
-        return True, "OK", media_type, duration
+        return True, "OK", media_type, duration, existing_text

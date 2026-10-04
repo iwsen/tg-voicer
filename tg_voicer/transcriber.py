@@ -31,6 +31,7 @@ class TranscriptionResult:
     text: Optional[str] = None
     transcription_id: Optional[int] = None
     error_message: Optional[str] = None
+    was_already_transcribed: bool = False  # True if text was already available in Telegram cloud/DB
 
 
 class TelegramTranscriber:
@@ -113,6 +114,7 @@ class TelegramTranscriber:
                 status="done",
                 text=existing["text"],
                 transcription_id=existing.get("transcription_id"),
+                was_already_transcribed=True,
             )
 
         # 2. Acquire lock and resolve input peer
@@ -187,6 +189,7 @@ class TelegramTranscriber:
                 status="done",
                 text=text,
                 transcription_id=transcription_id,
+                was_already_transcribed=True,
             )
 
         # If pending and user wants to wait for completion
@@ -227,6 +230,7 @@ class TelegramTranscriber:
                                         status="done",
                                         text=p_text,
                                         transcription_id=p_tid,
+                                        was_already_transcribed=False,
                                     )
                             except Exception:
                                 pass

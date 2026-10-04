@@ -250,13 +250,35 @@ class BackfillWorker:
         except Exception:
             sender = None
 
-        should_proc, reason, media_type, duration = self.filter_engine.should_process_message(
+        should_proc, reason, media_type, duration, existing_text = self.filter_engine.should_process_message(
             message=msg,
             chat=dialog.entity,
             sender=sender,
         )
 
         sender_name = utils.get_display_name(sender) if sender else "Unknown"
+
+        # If message already has text/caption, save it and skip API request
+        if existing_text and self.filter_engine.filters_cfg.skip_if_already_has_text:
+            logger.info(
+                f"ℹ️ [УЖЕ ЕСТЬ ТЕКСТ] msg_id={msg.id} в '{chat_title}' уже содержит текст/подпись: "
+                f"\"{existing_text[:50]}...\". Запрос к Telegram пропущен."
+            )
+            self.db.save_message(
+                chat_id=chat_id,
+                msg_id=msg.id,
+                media_type=media_type or "voice",
+                sender_id=msg.sender_id,
+                sender_name=sender_name,
+                chat_title=chat_title,
+                chat_type=chat_type,
+                text=existing_text,
+                status="done",
+                is_live=False,
+                duration_sec=duration,
+                msg_date=msg.date,
+            )
+            return
 
         if not should_proc:
             logger.debug(f"[BACKFILL SKIP] msg_id={msg.id} in '{chat_title}': {reason}")
@@ -296,16 +318,24 @@ class BackfillWorker:
             is_live=False,
         )
 
+        sleep_time = self.config.delay_seconds
+
         if result.status == "done":
             preview = result.text.replace("\n", " ") if result.text else ""
             if len(preview) > 80:
                 preview = preview[:77] + "..."
-            logger.info(f"✅ [BACKFILL] Расшифровано: \"{preview}\"")
+
+            if result.was_already_transcribed:
+                logger.info(f"⚡ [КЕШ TELEGRAM] Уже было расшифровано ранее в Telegram: \"{preview}\"")
+                sleep_time = getattr(self.config, "cached_delay_seconds", 0.5)
+            else:
+                logger.info(f"✅ [НОВАЯ РАСШИФРОВКА] Первично расшифровано: \"{preview}\"")
+                sleep_time = self.config.delay_seconds
         elif result.status == "pending":
             logger.info("⏳ [BACKFILL] Запрос отправлен. Обработка на сервере Telegram.")
         else:
             logger.warning(f"⚠️ [BACKFILL] Ошибка: {result.error_message}")
 
         # Polite delay to respect Telegram rate limits and avoid FloodWait
-        if self.config.delay_seconds > 0:
-            await asyncio.sleep(self.config.delay_seconds)
+        if sleep_time > 0:
+            await asyncio.sleep(sleep_time)

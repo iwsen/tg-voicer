@@ -77,6 +77,10 @@ allowed_chats = []
 # Если этот список НЕ пустой, скрипт будет обрабатывать голосовые ТОЛЬКО от этих людей.
 allowed_users = []
 
+# Пропускать сообщения, у которых уже есть текст (например текстовая подпись / caption)
+# Если true: если у голосового уже есть текст, мы не шлем запрос на расшифровку
+skip_if_already_has_text = true
+
 # Фильтр длительности голосовых в секундах (0 = без ограничений)
 min_duration_seconds = 0
 max_duration_seconds = 0
@@ -97,9 +101,13 @@ timeout_seconds = 30
 # Обрабатывать уже существующие (архивные) голосовые сообщения, когда нет новых
 enabled = true
 
-# Пауза между запросами расшифровки старых сообщений (в секундах).
+# Пауза между запросами расшифровки старых сообщений (в секундах) при ПЕРВИЧНОЙ расшифровке.
 # ВАЖНО: Telegram лимитирует частые запросы (FloodWait). Рекомендуется от 1.5 до 3.0 сек.
 delay_seconds = 2.0
+
+# Пауза (в секундах), если Telegram вернул УЖЕ ранее расшифрованный текст из своего кеша.
+# Поскольку сервер не тратит ресурсы на нейросеть, паузу можно сделать меньше (например 0.5с).
+cached_delay_seconds = 0.5
 
 # Максимальное количество сообщений для сканирования на один чат (0 = без лимита, вся история)
 max_messages_per_chat = 0
@@ -143,6 +151,7 @@ class FiltersConfig:
     ignored_users: List[Union[int, str]] = field(default_factory=list)
     allowed_chats: List[Union[int, str]] = field(default_factory=list)
     allowed_users: List[Union[int, str]] = field(default_factory=list)
+    skip_if_already_has_text: bool = True
     min_duration_seconds: int = 0
     max_duration_seconds: int = 0
 
@@ -158,6 +167,7 @@ class RealtimeConfig:
 class BackfillConfig:
     enabled: bool = True
     delay_seconds: float = 2.0
+    cached_delay_seconds: float = 0.5
     max_messages_per_chat: int = 0
     max_chats: int = 0
     batch_size: int = 100
@@ -253,6 +263,8 @@ class AppConfig:
             self.filters.allowed_chats = fl["allowed_chats"]
         if "allowed_users" in fl:
             self.filters.allowed_users = fl["allowed_users"]
+        if "skip_if_already_has_text" in fl:
+            self.filters.skip_if_already_has_text = bool(fl["skip_if_already_has_text"])
         if "min_duration_seconds" in fl:
             self.filters.min_duration_seconds = int(fl["min_duration_seconds"])
         if "max_duration_seconds" in fl:
@@ -271,6 +283,8 @@ class AppConfig:
             self.backfill.enabled = bool(bf["enabled"])
         if "delay_seconds" in bf:
             self.backfill.delay_seconds = float(bf["delay_seconds"])
+        if "cached_delay_seconds" in bf:
+            self.backfill.cached_delay_seconds = float(bf["cached_delay_seconds"])
         if "max_messages_per_chat" in bf:
             self.backfill.max_messages_per_chat = int(bf["max_messages_per_chat"])
         if "max_chats" in bf:

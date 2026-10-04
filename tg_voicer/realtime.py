@@ -69,7 +69,7 @@ class RealtimeListener:
             chat = None
             sender = None
 
-        should_proc, reason, media_type, duration = self.filter_engine.should_process_message(
+        should_proc, reason, media_type, duration, existing_text = self.filter_engine.should_process_message(
             message=message,
             chat=chat,
             sender=sender,
@@ -79,6 +79,27 @@ class RealtimeListener:
         msg_id = message.id
         chat_title = utils.get_display_name(chat) if chat else f"Chat_{chat_id}"
         sender_name = utils.get_display_name(sender) if sender else "Unknown"
+
+        # If message already has text/caption, save it and skip API request
+        if existing_text and self.filter_engine.filters_cfg.skip_if_already_has_text:
+            logger.info(
+                f"ℹ️ [УЖЕ ЕСТЬ ТЕКСТ] Новое сообщение id={msg_id} в '{chat_title}' уже содержит текст/подпись: "
+                f"\"{existing_text[:50]}...\". Запрос к Telegram пропущен."
+            )
+            self.db.save_message(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                media_type=media_type or "voice",
+                sender_id=message.sender_id,
+                sender_name=sender_name,
+                chat_title=chat_title,
+                text=existing_text,
+                status="done",
+                is_live=True,
+                duration_sec=duration,
+                msg_date=message.date,
+            )
+            return
 
         if not should_proc:
             logger.debug(f"[LIVE IGNORED] Message {msg_id} in '{chat_title}': {reason}")
@@ -118,7 +139,10 @@ class RealtimeListener:
             preview = result.text.replace("\n", " ") if result.text else ""
             if len(preview) > 80:
                 preview = preview[:77] + "..."
-            logger.info(f"✅ [LIVE] Расшифровано: \"{preview}\"")
+            if result.was_already_transcribed:
+                logger.info(f"⚡ [КЕШ TELEGRAM] Уже было расшифровано в Telegram: \"{preview}\"")
+            else:
+                logger.info(f"✅ [LIVE] Расшифровано: \"{preview}\"")
         elif result.status == "pending":
             logger.info("⏳ [LIVE] Запрос отправлен в Telegram. Обработка выполняется на сервере.")
         else:
