@@ -15,7 +15,9 @@ from telethon.tl import types
 from .config import BackfillConfig
 from .database import Database
 from .filters import FilterEngine, get_chat_type
+from .network import NetworkManager, is_network_error
 from .transcriber import TelegramTranscriber
+from . import ui
 
 logger = logging.getLogger("tg_voicer.backfill")
 
@@ -30,6 +32,7 @@ class BackfillWorker:
         transcriber: TelegramTranscriber,
         db: Database,
         config: BackfillConfig,
+        network_manager: Optional[NetworkManager] = None,
         dry_run: bool = False,
     ):
         self.client = client
@@ -37,6 +40,7 @@ class BackfillWorker:
         self.transcriber = transcriber
         self.db = db
         self.config = config
+        self.network_manager = network_manager
         self.dry_run = dry_run
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -60,16 +64,20 @@ class BackfillWorker:
 
     async def _run_loop(self) -> None:
         """Main loop that iterates through dialogs and processes history."""
+        if self.config.randomize_delay:
+            delay_str = f"случайная {self.config.delay_min_seconds:.1f}–{self.config.delay_max_seconds:.1f}с"
+        else:
+            delay_str = f"{self.config.delay_seconds:.1f}с"
         logger.info(
-            f"🔄 Background backfill initialized "
-            f"(delay={self.config.delay_seconds}s, batch_size={self.config.batch_size})"
+            f"🔄 Фоновый backfill запущен (пауза: {delay_str}, batch_size={self.config.batch_size})"
         )
 
         while self._running:
             try:
                 completed_all = await self._scan_all_dialogs()
                 if completed_all:
-                    logger.info("🎉 [BACKFILL] Вся доступная история чатов полностью обработана!")
+                    ui.print_all_completed()
+                    logger.debug("All chat history backfilled. Standby mode.")
                     # Sleep in standby mode, checking for new chats every 15 minutes
                     for _ in range(15 * 60):
                         if not self._running:
@@ -81,18 +89,40 @@ class BackfillWorker:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception(f"Unexpected error in backfill worker: {e}")
-                await asyncio.sleep(10)
+                if is_network_error(e):
+                    logger.warning(f"⚠️ Сбой сети в цикле backfill: {e}. Ожидание интернета...")
+                    if self.network_manager:
+                        await self.network_manager.wait_for_connection()
+                    else:
+                        await asyncio.sleep(5)
+                else:
+                    logger.exception(f"Unexpected error in backfill worker: {e}")
+                    await asyncio.sleep(10)
 
     async def _scan_all_dialogs(self) -> bool:
         """Iterate over all user dialogs and scan messages."""
         chats_scanned = 0
         total_eligible_dialogs = 0
 
-        # Fetch dialogs
+        # Fetch dialogs with network retry
         dialogs = []
-        async for dialog in self.client.iter_dialogs():
-            dialogs.append(dialog)
+        while self._running:
+            try:
+                async for dialog in self.client.iter_dialogs():
+                    dialogs.append(dialog)
+                break
+            except Exception as e:
+                if is_network_error(e):
+                    logger.warning(f"Ошибка сети при получении списка чатов: {e}. Ожидание интернета...")
+                    if self.network_manager:
+                        await self.network_manager.wait_for_connection()
+                    else:
+                        await asyncio.sleep(5)
+                    dialogs.clear()
+                    continue
+                else:
+                    logger.error(f"Не удалось получить список диалогов: {e}")
+                    return False
 
         logger.info(f"📋 Обнаружено всего диалогов: {len(dialogs)}")
 
@@ -128,7 +158,7 @@ class BackfillWorker:
 
             # 3. Scan historical messages backwards
             chats_scanned += 1
-            logger.info(f"🔍 [BACKFILL] Сканирование чата: '{chat_title}' ({chat_type}) [id={chat_id}]...")
+            ui.print_scan_chat(chat_title=chat_title, chat_type=chat_type, chat_id=chat_id)
             await self._scan_chat_history(dialog, cursor)
 
         return True
@@ -157,16 +187,30 @@ class BackfillWorker:
             )
 
             batch = []
-            try:
-                async for msg in self.client.iter_messages(
-                    dialog.input_entity,
-                    max_id=oldest_scanned_id or 0,
-                    limit=limit,
-                ):
-                    batch.append(msg)
-            except Exception as e:
-                logger.warning(f"Ошибка при чтении сообщений из '{chat_title}': {e}")
-                break
+            while self._running:
+                try:
+                    async for msg in self.client.iter_messages(
+                        dialog.input_entity,
+                        max_id=oldest_scanned_id or 0,
+                        limit=limit,
+                    ):
+                        batch.append(msg)
+                    break
+                except Exception as e:
+                    if is_network_error(e):
+                        logger.warning(
+                            f"Ошибка сети при чтении сообщений из '{chat_title}': {e}. "
+                            f"Ожидание интернета..."
+                        )
+                        if self.network_manager:
+                            await self.network_manager.wait_for_connection()
+                        else:
+                            await asyncio.sleep(5)
+                        batch.clear()
+                        continue
+                    else:
+                        logger.warning(f"Ошибка при чтении сообщений из '{chat_title}': {e}")
+                        break
 
             if not batch:
                 reached_end = True
@@ -202,7 +246,7 @@ class BackfillWorker:
                 break
 
         if reached_end:
-            logger.info(f"🏁 Завершена вся история чата '{chat_title}'.")
+            ui.print_chat_completed(chat_title=chat_title)
             self.db.update_chat_cursor(
                 chat_id=chat_id,
                 chat_title=chat_title,
@@ -218,23 +262,38 @@ class BackfillWorker:
         chat_id = utils.get_peer_id(dialog.entity)
         newest_seen = min_id
 
-        async for msg in self.client.iter_messages(
-            dialog.input_entity,
-            min_id=min_id,
-            max_id=max_id,
-            limit=self.config.batch_size,
-        ):
-            if not self._running:
+        while self._running:
+            try:
+                async for msg in self.client.iter_messages(
+                    dialog.input_entity,
+                    min_id=min_id,
+                    max_id=max_id,
+                    limit=self.config.batch_size,
+                ):
+                    if not self._running:
+                        break
+                    if msg.id > newest_seen:
+                        newest_seen = msg.id
+                    if msg.voice or msg.video_note:
+                        await self._process_backfill_message(msg, dialog, chat_type)
                 break
-            if msg.id > newest_seen:
-                newest_seen = msg.id
-            if msg.voice or msg.video_note:
-                await self._process_backfill_message(msg, dialog, chat_type)
+            except Exception as e:
+                if is_network_error(e):
+                    logger.warning(f"Ошибка сети при досканировании новых сообщений: {e}. Ожидание интернета...")
+                    if self.network_manager:
+                        await self.network_manager.wait_for_connection()
+                    else:
+                        await asyncio.sleep(5)
+                    continue
+                else:
+                    logger.warning(f"Ошибка при чтении сообщений диалога: {e}")
+                    break
 
         self.db.update_chat_cursor(
             chat_id=chat_id,
             newest_scanned_id=newest_seen,
         )
+
 
     async def _process_backfill_message(self, msg: types.Message, dialog: Any, chat_type: str) -> None:
         """Process an individual voice or video message during backfill."""
@@ -282,13 +341,27 @@ class BackfillWorker:
 
         if not should_proc:
             logger.debug(f"[BACKFILL SKIP] msg_id={msg.id} in '{chat_title}': {reason}")
-            self.db.mark_message_skipped(chat_id, msg.id, reason)
+            self.db.mark_message_skipped(
+                chat_id=chat_id,
+                msg_id=msg.id,
+                reason=reason,
+                media_type=media_type,
+                msg_date=msg.date,
+                duration_sec=duration,
+                sender_id=msg.sender_id,
+                sender_name=sender_name,
+                chat_title=chat_title,
+                chat_type=chat_type,
+            )
             return
 
-        media_label = "🎤 Голосовое" if media_type == "voice" else "📹 Кружочек"
-        logger.info(
-            f"📥 [BACKFILL] Найдено {media_label} ({duration:.1f}с) "
-            f"от {sender_name} в '{chat_title}' (id={msg.id}). Расшифровываем..."
+        ui.print_voice_found(
+            source="BACKFILL",
+            media_type=media_type or "voice",
+            duration=duration,
+            sender_name=sender_name,
+            chat_title=chat_title,
+            msg_id=msg.id,
         )
 
         if self.dry_run:
@@ -320,21 +393,14 @@ class BackfillWorker:
 
         sleep_time = self.config.delay_seconds
 
-        if result.status == "done":
-            preview = result.text.replace("\n", " ") if result.text else ""
-            if len(preview) > 80:
-                preview = preview[:77] + "..."
+        ui.print_transcription_result(
+            text=result.text,
+            is_cached=result.was_already_transcribed,
+            status=result.status,
+            error=result.error_message,
+        )
 
-            if result.was_already_transcribed:
-                logger.info(f"⚡ [КЕШ TELEGRAM] Уже было расшифровано ранее в Telegram: \"{preview}\"")
-                sleep_time = getattr(self.config, "cached_delay_seconds", 0.5)
-            else:
-                logger.info(f"✅ [НОВАЯ РАСШИФРОВКА] Первично расшифровано: \"{preview}\"")
-                sleep_time = self.config.delay_seconds
-        elif result.status == "pending":
-            logger.info("⏳ [BACKFILL] Запрос отправлен. Обработка на сервере Telegram.")
-        else:
-            logger.warning(f"⚠️ [BACKFILL] Ошибка: {result.error_message}")
+        sleep_time = self.config.get_delay(is_cached=result.was_already_transcribed)
 
         # Polite delay to respect Telegram rate limits and avoid FloodWait
         if sleep_time > 0:

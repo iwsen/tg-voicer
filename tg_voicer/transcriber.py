@@ -21,6 +21,8 @@ from telethon.tl import types
 from telethon.tl.functions.messages import TranscribeAudioRequest
 
 from .database import Database
+from .network import NetworkManager, is_network_error
+from . import ui
 
 logger = logging.getLogger("tg_voicer.transcriber")
 
@@ -41,11 +43,13 @@ class TelegramTranscriber:
         self,
         client: TelegramClient,
         db: Database,
+        network_manager: Optional[NetworkManager] = None,
         wait_for_completion: bool = True,
         timeout_seconds: int = 30,
     ):
         self.client = client
         self.db = db
+        self.network_manager = network_manager
         self.wait_for_completion = wait_for_completion
         self.timeout_seconds = timeout_seconds
 
@@ -119,20 +123,28 @@ class TelegramTranscriber:
 
         # 2. Acquire lock and resolve input peer
         async with self._rpc_lock:
-            try:
-                input_peer = await self.client.get_input_entity(peer)
-            except Exception as e:
-                err_msg = f"Failed to resolve input peer: {e}"
-                logger.error(err_msg)
-                return TranscriptionResult(status="failed", error_message=err_msg)
+            while True:
+                try:
+                    input_peer = await self.client.get_input_entity(peer)
+                    break
+                except Exception as e:
+                    if is_network_error(e):
+                        logger.warning(f"Ошибка сети при получении информации о чате/собеседнике: {e}. Ожидание интернета...")
+                        if self.network_manager:
+                            await self.network_manager.wait_for_connection()
+                        else:
+                            await asyncio.sleep(5)
+                        continue
+                    err_msg = f"Failed to resolve input peer: {e}"
+                    logger.error(err_msg)
+                    return TranscriptionResult(status="failed", error_message=err_msg)
 
-            # 3. Call TranscribeAudioRequest with FloodWait handling
+            # 3. Call TranscribeAudioRequest with FloodWait and network error handling
             max_retries = 3
             current_try = 0
             res = None
 
             while current_try < max_retries:
-                current_try += 1
                 try:
                     res = await self.client(
                         TranscribeAudioRequest(peer=input_peer, msg_id=msg_id)
@@ -140,8 +152,9 @@ class TelegramTranscriber:
                     break
                 except FloodWaitError as e:
                     wait_time = e.seconds + 2
-                    logger.warning(
-                        f"⏳ Telegram FloodWait: server requested {e.seconds}s pause. "
+                    ui.print_flood_wait(e.seconds)
+                    logger.debug(
+                        f"Telegram FloodWait: {e.seconds}s pause required by server. "
                         f"Sleeping {wait_time}s..."
                     )
                     await asyncio.sleep(wait_time)
@@ -156,15 +169,35 @@ class TelegramTranscriber:
                     self.db.mark_message_failed(chat_id, msg_id, err_msg)
                     return TranscriptionResult(status="failed", error_message=err_msg)
                 except RPCError as e:
+                    if is_network_error(e):
+                        logger.warning(f"Сетевой сбой при вызове TranscribeAudioRequest: {e}. Ожидание интернета...")
+                        if self.network_manager:
+                            await self.network_manager.wait_for_connection()
+                        else:
+                            await asyncio.sleep(5)
+                        continue
                     err_msg = f"Telegram RPC error: {e}"
                     logger.warning(err_msg)
                     self.db.mark_message_failed(chat_id, msg_id, err_msg)
                     return TranscriptionResult(status="failed", error_message=err_msg)
                 except Exception as e:
+                    if is_network_error(e):
+                        logger.warning(
+                            f"Потеря сети при вызове TranscribeAudioRequest msg_id={msg_id}: {e}. "
+                            f"Ожидание восстановления соединения..."
+                        )
+                        if self.network_manager:
+                            await self.network_manager.wait_for_connection()
+                        else:
+                            await asyncio.sleep(5)
+                        # Do not count network outage against max_retries
+                        continue
+                    current_try += 1
                     err_msg = f"Unexpected error while calling TranscribeAudioRequest: {e}"
                     logger.exception(err_msg)
-                    self.db.mark_message_failed(chat_id, msg_id, err_msg)
-                    return TranscriptionResult(status="failed", error_message=err_msg)
+                    if current_try >= max_retries:
+                        self.db.mark_message_failed(chat_id, msg_id, err_msg)
+                        return TranscriptionResult(status="failed", error_message=err_msg)
 
             if not res:
                 return TranscriptionResult(
@@ -232,13 +265,17 @@ class TelegramTranscriber:
                                         transcription_id=p_tid,
                                         was_already_transcribed=False,
                                     )
-                            except Exception:
-                                pass
+                            except Exception as pe:
+                                if is_network_error(pe) and self.network_manager:
+                                    await self.network_manager.wait_for_connection()
+                                else:
+                                    pass
 
             except asyncio.CancelledError:
                 raise
             finally:
                 self._pending_futures.pop((chat_id, msg_id), None)
+
 
         # If not waiting or timeout reached: transcription is initiated in cloud
         self.db.update_transcription(

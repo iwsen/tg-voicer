@@ -1,121 +1,139 @@
 # ==============================================================================
 # TG-VOICER Configuration
-# Автоматическая расшифровка голосовых сообщений и кружочков через Telegram Premium
+# Automated Telegram Premium speech-to-text transcriber for voice & video notes
 # ==============================================================================
 
+[general]
+# Interface and display language:
+#   "en" - English (default)
+#   "ru" - Russian
+language = "en"
+
+
 [telegram]
-# Получите api_id и api_hash на сайте https://my.telegram.org (пункт 'API development tools')
+# Obtain your api_id and api_hash at https://my.telegram.org ('API development tools')
 api_id = 12345678
 api_hash = "0123456789abcdef0123456789abcdef"
 
-# Имя сессии (файл сохраняется в папке data/session_name.session)
+# Session name (session file will be saved in data/session_name.session)
 session_name = "tg_voicer"
 
-# Расшифровывать голосовые сообщения (.ogg / .opus)
+# Authentication method on initial launch: "qr" (QR code scan in mobile app) or "phone" (SMS/code)
+auth_method = "qr"
+
+# Transcribe voice audio messages (.ogg / .opus)
 transcribe_voice = true
 
-# Расшифровывать видеосообщения (круглые видеосообщения / кружочки)
+# Transcribe video notes (round video messages)
 transcribe_video_notes = true
 
-# Расшифровывать собственные отправленные голосовые (true - да, false - только входящие)
+# Transcribe your own outgoing voice messages (true = both, false = incoming only)
 transcribe_outgoing = false
 
 
 [filters]
-# 1. ТИПЫ ЧАТОВ, КОТОРЫЕ НУЖНО ИГНОРИРОВАТЬ.
-# Допустимые значения в списке:
-#   "channels"    - каналы (broadcast channels)
-#   "groups"      - обычные группы и супергруппы
-#   "private"     - личные сообщения (директ 1-на-1)
-#   "bots"        - диалоги с ботами
-# Пример: ignore_types = ["channels", "bots"]
+# 1. CHAT TYPES TO IGNORE.
+# Supported values:
+#   "channels"    - broadcast channels
+#   "groups"      - regular groups and supergroups
+#   "private"     - 1-on-1 direct messages
+#   "bots"        - bot dialogs
+# Example: ignore_types = ["channels", "bots"]
 ignore_types = []
 
-# 2. КОНКРЕТНЫЕ ЧАТЫ, ГРУППЫ ИЛИ КАНАЛЫ ДЛЯ ИГНОРИРОВАНИЯ.
-# Можно указывать:
-#   - ID чата (число, например -1001234567890 или 12345678)
-#   - Username (например "@annoying_channel" или "work_group")
-#   - Название или часть названия (например "Рабочий флуд", "Новости")
-# Пример:
+# 2. SPECIFIC CHATS, CHANNELS OR GROUPS TO IGNORE.
+# Can specify:
+#   - Chat ID (integer, e.g. -1001234567890 or 12345678)
+#   - Username (e.g. "@annoying_channel" or "news_chat")
+#   - Chat title or substring (e.g. "Work Spam", "News")
+# Example:
 # ignored_chats = [
 #     "@news_feed",
 #     -100192837465,
-#     "Мемы и флуд"
+#     "Random Memes"
 # ]
 ignored_chats = []
 
-# 3. КОНКРЕТНЫЕ ПОЛЬЗОВАТЕЛИ (ЛЮДИ), ЧЬИ ГОЛОСОВЫЕ НУЖНО ИГНОРИРОВАТЬ.
-# Можно указывать:
-#   - ID пользователя (число, например 123456789)
-#   - Username (например "@spammer_bot" или "john_doe")
-#   - Имя / фамилию (например "Иван Иванов")
-# Пример:
+# 3. SPECIFIC USERS WHOSE VOICE MESSAGES SHOULD BE IGNORED.
+# Can specify:
+#   - User ID (integer, e.g. 123456789)
+#   - Username (e.g. "@annoying_user" or "john_doe")
+#   - Display name or substring (e.g. "John Doe")
+# Example:
 # ignored_users = [
 #     "@annoying_colleague",
 #     987654321,
-#     "Спамер"
+#     "Spammer"
 # ]
 ignored_users = []
 
-# 4. БЕЛЫЙ СПИСОК ЧАТОВ (Опционально).
-# Если этот список НЕ пустой, скрипт будет расшифровывать голосовые ТОЛЬКО в этих чатах!
+# 4. CHAT WHITELIST (Optional).
+# If not empty, only voice notes in these specific chats will be processed!
 allowed_chats = []
 
-# 5. БЕЛЫЙ СПИСОК ПОЛЬЗОВАТЕЛЕЙ (Опционально).
-# Если этот список НЕ пустой, скрипт будет расшифровывать голосовые ТОЛЬКО от этих людей!
+# 5. USER WHITELIST (Optional).
+# If not empty, only voice notes from these specific users will be processed!
 allowed_users = []
 
-# 6. ПРОПУСКАТЬ СООБЩЕНИЯ, У КОТОРЫХ УЖЕ ЕСТЬ ТЕКСТ (подпись/caption)
-# Если true: если у голосового уже есть текстовая подпись, запрос к API не отправляется
+# 6. SKIP MESSAGES THAT ALREADY HAVE A TEXT CAPTION.
+# If true: if a voice message already has caption text, no transcription API call is made.
 skip_if_already_has_text = true
 
-# Фильтрация по длительности в секундах (0 = без ограничений)
+# Filter by audio duration in seconds (0 = no limit)
 min_duration_seconds = 0
 max_duration_seconds = 0
 
 
 [realtime]
-# Отслеживать новые сообщения в реальном времени и сразу нажимать кнопку
+# Intercept incoming messages in real time and transcribe immediately
 enabled = true
 
-# Ожидать завершения расшифровки, если Telegram вернул статус "в обработке" (pending)
+# Wait for transcription completion if Telegram returns "pending" status
 wait_for_completion = true
 
-# Таймаут ожидания распознавания одного сообщения (в секундах)
+# Timeout waiting for a single transcription in seconds
 timeout_seconds = 30
 
 
 [backfill]
-# Обрабатывать старые (архивные) голосовые сообщения, пока нет новых
+# Process existing historical voice messages when no new live messages arrive
 enabled = true
 
-# Пауза между запросами при ПЕРВИЧНОЙ расшифровке (в секундах).
-# ВАЖНО: Telegram лимитирует частые запросы (FloodWait). Рекомендуется 1.5 - 3.0 сек.
-delay_seconds = 2.0
+# Randomize pause between API requests (strongly recommended against FloodWait)
+randomize_delay = true
 
-# Пауза (в секундах), если Telegram вернул УЖЕ ранее расшифрованный текст из своего кеша.
-# Сервер отдает готовый результат без нагрузки на распознавание, поэтому паузу можно сократить.
-cached_delay_seconds = 0.5
+# Delay interval for initial transcription (in seconds)
+# A random float within this range will be chosen before the next request:
+delay_min_seconds = 3.5
+delay_max_seconds = 7.0
 
-# Максимальное количество сообщений для сканирования на один чат (0 = без лимита, до самого первого сообщения)
+# Fixed delay (used only when randomize_delay = false):
+delay_seconds = 4.5
+
+# Delay for messages already cached in Telegram cloud (instant fetch, no AI load):
+cached_delay_min_seconds = 0.5
+cached_delay_max_seconds = 1.5
+cached_delay_seconds = 0.8
+
+# Maximum messages to scan per chat (0 = unlimited, entire history)
 max_messages_per_chat = 0
 
-# Максимальное количество чатов для сканирования (0 = все доступные)
+# Maximum number of chats to scan (0 = all available)
 max_chats = 0
 
-# Размер пачки сообщений при чтении истории
+# Batch size when requesting message history chunks
 batch_size = 100
 
 
 [storage]
-# Путь к SQLite базе данных для хранения статуса и истории расшифровок
+# Path to SQLite database for state, history, and metrics
 db_path = "data/voicer.db"
 
 
 [logging]
-# Уровень логирования: "DEBUG", "INFO", "WARNING", "ERROR"
+# Log level: "DEBUG", "INFO", "WARNING", "ERROR"
 level = "INFO"
 
-# Сохранять лог в файл
+# Save logs to file
 log_to_file = true
 log_file_path = "data/voicer.log"

@@ -19,119 +19,130 @@ except ImportError:
 
 DEFAULT_CONFIG_TEMPLATE = """# ==============================================================================
 # TG-VOICER Configuration
-# Автоматическая расшифровка голосовых сообщений и кружочков через Telegram Premium
+# Automated Telegram Premium speech-to-text transcriber for voice & video notes
 # ==============================================================================
 
+[general]
+# Interface and display language: "en" (English - default) or "ru" (Russian)
+language = "en"
+
 [telegram]
-# Получите api_id и api_hash на сайте https://my.telegram.org (пункт API development tools)
+# Obtain api_id and api_hash at https://my.telegram.org ('API development tools')
 api_id = 0
 api_hash = ""
 
-# Название сессии (сохраняется в data/session_name.session)
+# Session name (stored in data/session_name.session)
 session_name = "tg_voicer"
 
-# Способ первой авторизации: "qr" (через QR-код в приложении) или "phone" (по номеру и коду)
+# Authentication method on initial launch: "qr" (QR code scan in mobile app) or "phone"
 auth_method = "qr"
 
-# Расшифровывать голосовые сообщения (.ogg / .opus)
+# Transcribe voice audio messages (.ogg / .opus)
 transcribe_voice = true
 
-# Расшифровывать видеосообщения (кружочки)
+# Transcribe round video notes
 transcribe_video_notes = true
 
-# Расшифровывать собственные отправленные голосовые (true - да, false - только входящие)
+# Transcribe your own outgoing voice messages (true = both, false = incoming only)
 transcribe_outgoing = false
 
 
 [filters]
-# 1. Типы чатов, которые нужно ИГНОРИРОВАТЬ.
-# Допустимые значения:
-#   "channels"    - каналы (broadcast channels)
-#   "groups"      - группы и супергруппы
-#   "private"     - личные сообщения (директ 1-на-1)
-#   "bots"        - диалоги с ботами
-# Пример: ignore_types = ["channels", "bots"]
+# 1. Chat types to IGNORE.
+# Allowed options:
+#   "channels"    - broadcast channels
+#   "groups"      - group chats and supergroups
+#   "private"     - 1-on-1 direct messages
+#   "bots"        - bot dialogs
+# Example: ignore_types = ["channels", "bots"]
 ignore_types = []
 
-# 2. Конкретные чаты/группы/каналы, которые нужно ИГНОРИРОВАТЬ.
-# Можно указывать:
-#   - ID чата (число, например -1001234567890 или 12345678)
-#   - Username чата (например "@annoying_channel" или "news_chat")
-#   - Название чата или его часть (например "Рабочий флуд", "Новости")
-# Пример:
-# ignored_chats = ["@some_channel", -100192837465, "Флудилка"]
+# 2. Specific chats, channels or groups to IGNORE.
+# Can specify:
+#   - Chat ID (integer, e.g. -1001234567890 or 12345678)
+#   - Chat username (e.g. "@annoying_channel" or "news_chat")
+#   - Chat title or substring (e.g. "Work Spam", "News")
+# Example:
+# ignored_chats = ["@some_channel", -100192837465, "Spam Group"]
 ignored_chats = []
 
-# 3. Конкретные пользователи (люди), чьи голосовые нужно ИГНОРИРОВАТЬ.
-# Можно указывать:
-#   - ID пользователя (число, например 123456789)
-#   - Username пользователя (например "@annoying_user")
-#   - Имя/фамилия пользователя (например "Иван Иванов")
-# Пример:
-# ignored_users = ["@spammer", 123456789, "Нежелательный Человек"]
+# 3. Specific users whose voice messages should be IGNORED.
+# Can specify:
+#   - User ID (integer, e.g. 123456789)
+#   - Username (e.g. "@annoying_user")
+#   - User's display name or substring (e.g. "John Doe")
+# Example:
+# ignored_users = ["@spammer", 123456789, "Unwanted Person"]
 ignored_users = []
 
-# 4. БЕЛЫЙ СПИСОК ЧАТОВ (Опционально).
-# Если этот список НЕ пустой, скрипт будет обрабатывать ТОЛЬКО эти чаты.
-# Оставьте пустым [], чтобы обрабатывать все (кроме ignored_chats).
+# 4. Chat Whitelist (Optional).
+# If not empty, only voice notes in these specific chats will be processed.
+# Leave empty [] to process all non-ignored chats.
 allowed_chats = []
 
-# 5. БЕЛЫЙ СПИСОК ПОЛЬЗОВАТЕЛЕЙ (Опционально).
-# Если этот список НЕ пустой, скрипт будет обрабатывать голосовые ТОЛЬКО от этих людей.
+# 5. User Whitelist (Optional).
+# If not empty, only voice notes from these specific users will be processed.
 allowed_users = []
 
-# Пропускать сообщения, у которых уже есть текст (например текстовая подпись / caption)
-# Если true: если у голосового уже есть текст, мы не шлем запрос на расшифровку
+# Skip messages that already have a text caption
+# If true: if a voice message already has caption text, no API call is made.
 skip_if_already_has_text = true
 
-# Фильтр длительности голосовых в секундах (0 = без ограничений)
+# Filter by voice duration in seconds (0 = no limit)
 min_duration_seconds = 0
 max_duration_seconds = 0
 
 
 [realtime]
-# Отслеживать новые сообщения в реальном времени и сразу нажимать кнопку
+# Intercept incoming messages in real time and transcribe immediately
 enabled = true
 
-# Ожидать завершения расшифровки, если Telegram вернул "в обработке" (pending)
+# Wait for completion if Telegram returns pending status
 wait_for_completion = true
 
-# Таймаут ожидания распознавания одного сообщения (секунды)
+# Timeout waiting for a single transcription in seconds
 timeout_seconds = 30
 
 
 [backfill]
-# Обрабатывать уже существующие (архивные) голосовые сообщения, когда нет новых
+# Process existing historical voice messages when no new live messages arrive
 enabled = true
 
-# Пауза между запросами расшифровки старых сообщений (в секундах) при ПЕРВИЧНОЙ расшифровке.
-# ВАЖНО: Telegram лимитирует частые запросы (FloodWait). Рекомендуется от 1.5 до 3.0 сек.
-delay_seconds = 2.0
+# Randomize pause between API requests (strongly recommended against FloodWait)
+randomize_delay = true
 
-# Пауза (в секундах), если Telegram вернул УЖЕ ранее расшифрованный текст из своего кеша.
-# Поскольку сервер не тратит ресурсы на нейросеть, паузу можно сделать меньше (например 0.5с).
-cached_delay_seconds = 0.5
+# Delay interval for initial transcription (in seconds)
+delay_min_seconds = 3.5
+delay_max_seconds = 7.0
 
-# Максимальное количество сообщений для сканирования на один чат (0 = без лимита, вся история)
+# Fixed delay (used only when randomize_delay = false)
+delay_seconds = 4.5
+
+# Delay for messages already cached in Telegram cloud (instant fetch)
+cached_delay_min_seconds = 0.5
+cached_delay_max_seconds = 1.5
+cached_delay_seconds = 0.8
+
+# Maximum messages to scan per chat (0 = unlimited, entire history)
 max_messages_per_chat = 0
 
-# Максимальное количество чатов для сканирования (0 = все доступные)
+# Maximum number of chats to scan (0 = all available dialogs)
 max_chats = 0
 
-# Размер пачки сообщений при запросе истории
+# Batch size when requesting message history chunks
 batch_size = 100
 
 
 [storage]
-# Путь к SQLite базе данных для хранения статуса и кеша
+# Path to SQLite database for state, history, and metrics
 db_path = "data/voicer.db"
 
 
 [logging]
-# Уровень логирования: "DEBUG", "INFO", "WARNING", "ERROR"
+# Log level: "DEBUG", "INFO", "WARNING", "ERROR"
 level = "INFO"
 
-# Сохранять лог в файл
+# Save logs to file
 log_to_file = true
 log_file_path = "data/voicer.log"
 """
@@ -170,11 +181,28 @@ class RealtimeConfig:
 @dataclass
 class BackfillConfig:
     enabled: bool = True
-    delay_seconds: float = 2.0
-    cached_delay_seconds: float = 0.5
+    delay_seconds: float = 4.0
+    cached_delay_seconds: float = 0.8
+    randomize_delay: bool = True
+    delay_min_seconds: float = 3.5
+    delay_max_seconds: float = 7.0
+    cached_delay_min_seconds: float = 0.5
+    cached_delay_max_seconds: float = 1.5
     max_messages_per_chat: int = 0
     max_chats: int = 0
     batch_size: int = 100
+
+    def get_delay(self, is_cached: bool = False) -> float:
+        """Calculate sleep delay in seconds, supporting random intervals."""
+        import random
+        if is_cached:
+            if self.randomize_delay and self.cached_delay_max_seconds > self.cached_delay_min_seconds:
+                return round(random.uniform(self.cached_delay_min_seconds, self.cached_delay_max_seconds), 2)
+            return self.cached_delay_seconds
+        else:
+            if self.randomize_delay and self.delay_max_seconds > self.delay_min_seconds:
+                return round(random.uniform(self.delay_min_seconds, self.delay_max_seconds), 2)
+            return self.delay_seconds
 
 
 @dataclass
@@ -191,6 +219,7 @@ class LoggingConfig:
 
 @dataclass
 class AppConfig:
+    language: str = "en"
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     filters: FiltersConfig = field(default_factory=FiltersConfig)
     realtime: RealtimeConfig = field(default_factory=RealtimeConfig)
@@ -236,9 +265,22 @@ class AppConfig:
 
         # Allow environment variables to override or populate secrets
         config._apply_env()
+
+        # Synchronize global i18n language
+        from .i18n import set_language
+        set_language(config.language)
+
         return config
 
     def _apply_dict(self, data: dict[str, Any]) -> None:
+        lang = (
+            data.get("language")
+            or data.get("general", {}).get("language")
+            or data.get("app", {}).get("language")
+        )
+        if lang:
+            self.language = str(lang).strip().lower()
+
         tg = data.get("telegram", {})
         if "api_id" in tg:
             try:
@@ -291,6 +333,16 @@ class AppConfig:
             self.backfill.delay_seconds = float(bf["delay_seconds"])
         if "cached_delay_seconds" in bf:
             self.backfill.cached_delay_seconds = float(bf["cached_delay_seconds"])
+        if "randomize_delay" in bf:
+            self.backfill.randomize_delay = bool(bf["randomize_delay"])
+        if "delay_min_seconds" in bf:
+            self.backfill.delay_min_seconds = float(bf["delay_min_seconds"])
+        if "delay_max_seconds" in bf:
+            self.backfill.delay_max_seconds = float(bf["delay_max_seconds"])
+        if "cached_delay_min_seconds" in bf:
+            self.backfill.cached_delay_min_seconds = float(bf["cached_delay_min_seconds"])
+        if "cached_delay_max_seconds" in bf:
+            self.backfill.cached_delay_max_seconds = float(bf["cached_delay_max_seconds"])
         if "max_messages_per_chat" in bf:
             self.backfill.max_messages_per_chat = int(bf["max_messages_per_chat"])
         if "max_chats" in bf:
@@ -311,6 +363,10 @@ class AppConfig:
             self.logging.log_file_path = str(lg["log_file_path"])
 
     def _apply_env(self) -> None:
+        lang_env = os.getenv("TG_VOICER_LANG") or os.getenv("LANGUAGE")
+        if lang_env:
+            self.language = lang_env.strip().lower()
+
         # Check standard TG env variables
         api_id_env = os.getenv("TG_API_ID") or os.getenv("API_ID")
         if api_id_env:

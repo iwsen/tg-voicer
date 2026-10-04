@@ -1,4 +1,8 @@
-# Python
+# ==============================================================================
+# TG-Voicer .gitignore
+# ==============================================================================
+
+# Python bytecode & cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,25 +28,45 @@ wheels/
 .venv/
 venv/
 ENV/
+env/
+.env/
 
 # Telegram credentials & Session files
 *.session
 *.session-journal
-data/*.session
-data/*.session-journal
+*.session-wal
+*.session-shm
+temp.session
 .env
+*.env
 
-# Application databases & logs
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.log
-*.log
-
-# User local config with secret API credentials
+# Local configuration with user secret API credentials
 config.toml
 
-# IDE & OS
-.DS_Store
+# Application runtime data (databases, logs, QR SVGs, PID files, caches)
+data/*
+!data/.gitkeep
+*.log
+*.pid
+*.db
+*.db-wal
+*.db-shm
+
+# IDE & Editor files
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

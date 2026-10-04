@@ -13,12 +13,16 @@ from typing import Optional
 
 from telethon import TelegramClient
 
+from tg_voicer import __version__
 from .backfill import BackfillWorker
 from .config import AppConfig
 from .database import Database
 from .filters import FilterEngine
+from .network import NetworkManager, is_network_error
+from .i18n import t
 from .realtime import RealtimeListener
 from .transcriber import TelegramTranscriber
+from . import ui
 
 logger = logging.getLogger("tg_voicer.app")
 
@@ -50,9 +54,12 @@ class VoicerApp:
             self.config.telegram.api_hash,
         )
 
+        self.network_manager = NetworkManager(self.client)
+
         self.transcriber = TelegramTranscriber(
             client=self.client,
             db=self.db,
+            network_manager=self.network_manager,
             wait_for_completion=self.config.realtime.wait_for_completion,
             timeout_seconds=self.config.realtime.timeout_seconds,
         )
@@ -62,6 +69,7 @@ class VoicerApp:
             filter_engine=self.filter_engine,
             transcriber=self.transcriber,
             db=self.db,
+            network_manager=self.network_manager,
         )
 
         self.backfill_worker = BackfillWorker(
@@ -70,6 +78,7 @@ class VoicerApp:
             transcriber=self.transcriber,
             db=self.db,
             config=self.config.backfill,
+            network_manager=self.network_manager,
             dry_run=self.dry_run,
         )
 
@@ -84,41 +93,83 @@ class VoicerApp:
             )
 
         logger.info("Connecting to Telegram...")
-        if not self.client.is_connected():
-            await self.client.connect()
+        while not self._shutdown_event.is_set():
+            try:
+                if not self.client.is_connected():
+                    await self.client.connect()
+                break
+            except Exception as e:
+                if is_network_error(e):
+                    ui.print_network_offline(5)
+                    logger.warning(f"Ошибка сети при подключении к Telegram: {e}. Повтор через 5с...")
+                    await asyncio.sleep(5)
+                else:
+                    raise
 
-        if not await self.client.is_user_authorized():
+        # Check authorization with network resilience
+        is_auth = False
+        while not self._shutdown_event.is_set():
+            try:
+                is_auth = await self.client.is_user_authorized()
+                break
+            except Exception as e:
+                if is_network_error(e):
+                    await self.network_manager.wait_for_connection()
+                else:
+                    raise
+
+        if not is_auth:
             if getattr(self.config.telegram, "auth_method", "qr") == "phone":
-                logger.info("Запуск авторизации по номеру телефона...")
+                logger.info(t("login_phone_start"))
                 await self.client.start()
             else:
                 await self._login_with_qr()
 
-        me = await self.client.get_me()
+        me = None
+        while not self._shutdown_event.is_set():
+            try:
+                me = await self.client.get_me()
+                break
+            except Exception as e:
+                if is_network_error(e):
+                    await self.network_manager.wait_for_connection()
+                else:
+                    raise
+
+        if not me:
+            raise RuntimeError("Failed to fetch Telegram user profile")
         user_name = f"{me.first_name or ''} {me.last_name or ''}".strip()
         user_handle = f"@{me.username}" if me.username else f"ID:{me.id}"
         is_premium = bool(getattr(me, "premium", False))
 
-        logger.info(f"👤 Вошли как: {user_name} ({user_handle})")
-        if is_premium:
-            logger.info("🌟 Статус: Telegram Premium АКТИВЕН (нативная расшифровка доступна)")
+        if self.live_only:
+            mode_desc = t("mode_live_only")
+        elif self.backfill_only:
+            mode_desc = t("mode_backfill_only")
         else:
-            logger.warning(
-                "⚠️ ВНИМАНИЕ: На этом аккаунте не обнаружена активная подписка Telegram Premium! "
-                "Кнопка расшифровки сообщений в Telegram требует Premium."
-            )
+            mode_desc = t("mode_all")
 
-        # Log filter configuration summary
+        filter_summaries = []
         if self.config.filters.ignore_types:
-            logger.info(f"🚫 Игнорируемые типы чатов: {', '.join(self.config.filters.ignore_types)}")
+            filter_summaries.append(t("filter_ignore_types", types=", ".join(self.config.filters.ignore_types)))
         if self.config.filters.ignored_chats:
-            logger.info(f"🚫 Игнорируемые чаты: {len(self.config.filters.ignored_chats)} правил")
+            filter_summaries.append(t("filter_ignored_chats", count=len(self.config.filters.ignored_chats)))
         if self.config.filters.ignored_users:
-            logger.info(f"🚫 Игнорируемые пользователи: {len(self.config.filters.ignored_users)} правил")
+            filter_summaries.append(t("filter_ignored_users", count=len(self.config.filters.ignored_users)))
         if self.config.filters.allowed_chats:
-            logger.info(f"🎯 Белый список чатов активен ({len(self.config.filters.allowed_chats)} чатов)")
+            filter_summaries.append(t("filter_allowed_chats", count=len(self.config.filters.allowed_chats)))
         if self.config.filters.allowed_users:
-            logger.info(f"🎯 Белый список пользователей активен ({len(self.config.filters.allowed_users)} пользователей)")
+            filter_summaries.append(t("filter_allowed_users", count=len(self.config.filters.allowed_users)))
+
+        ui.print_banner(
+            version=__version__,
+            user_name=user_name,
+            user_handle=user_handle,
+            is_premium=is_premium,
+            mode_desc=mode_desc,
+            db_path=str(self.config.storage.db_path),
+            filter_summaries=filter_summaries,
+        )
 
         tasks = []
 
@@ -131,7 +182,10 @@ class VoicerApp:
             backfill_task = self.backfill_worker.start()
             tasks.append(backfill_task)
 
-        logger.info("🚀 TG-Voicer запущен и готов к работе! Для выхода нажмите Ctrl+C.")
+        # 3. Start background network connection watchdog
+        self.network_manager.start_watchdog()
+
+        ui.console.print(f"[dim]{t('app_ready')}[/dim]")
 
         # If backfill-only mode, wait for backfill task to finish
         if self.backfill_only:
@@ -152,12 +206,11 @@ class VoicerApp:
         from telethon.errors import SessionPasswordNeededError
 
         print("\n" + "=" * 65)
-        print(" 📱 Авторизация через QR-код Telegram")
+        print(t("qr_header"))
         print("=" * 65)
-        print(" 1. Откройте Telegram на телефоне")
-        print(" 2. Перейдите: Настройки -> Устройства -> Подключить устройство")
-        print("    (Settings -> Devices -> Link Desktop Device)")
-        print(" 3. Наведите камеру Telegram на QR-код ниже:")
+        print(t("qr_step1"))
+        print(t("qr_step2"))
+        print(t("qr_step3"))
         print("=" * 65 + "\n")
 
         svg_opened = False
@@ -178,7 +231,7 @@ class VoicerApp:
                     import qrcode.image.svg
                     img = qrcode.make(qr_login.url, image_factory=qrcode.image.svg.SvgPathImage)
                     img.save(str(svg_path))
-                    print(f"\n🖼️ QR-код также сохранен в файл: {svg_path.absolute()}")
+                    print("\n" + t("qr_saved_file", path=svg_path.absolute()))
                     if not svg_opened and sys.platform == "darwin":
                         import subprocess
                         subprocess.Popen(["open", str(svg_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -186,36 +239,38 @@ class VoicerApp:
                 except Exception as e:
                     logger.debug(f"Could not generate SVG QR: {e}")
 
-                print("\n⏳ Ожидание сканирования QR-кода... (наведите камеру из Telegram)")
+                print("\n" + t("qr_waiting"))
 
                 try:
                     await qr_login.wait()
-                    print("\n✅ QR-код успешно отсканирован!")
+                    print("\n" + t("qr_scanned"))
                     break
                 except SessionPasswordNeededError:
-                    print("\n🔐 На вашем аккаунте включена двухфакторная аутентификация (2FA).")
-                    password = getpass.getpass("Введите облачный пароль (2FA): ").strip()
+                    print("\n" + t("qr_2fa_notice"))
+                    password = getpass.getpass(t("qr_2fa_prompt")).strip()
                     await self.client.sign_in(password=password)
-                    print("✅ 2FA пароль принят!")
+                    print(t("qr_2fa_accepted"))
                     break
                 except asyncio.TimeoutError:
-                    print("\n🔄 Время действия QR-кода истекло (30с). Обновляем QR-код...")
+                    print("\n" + t("qr_timeout"))
                     continue
             except SessionPasswordNeededError:
-                print("\n🔐 На вашем аккаунте включена двухфакторная аутентификация (2FA).")
-                password = getpass.getpass("Введите облачный пароль (2FA): ").strip()
+                print("\n" + t("qr_2fa_notice"))
+                password = getpass.getpass(t("qr_2fa_prompt")).strip()
                 await self.client.sign_in(password=password)
-                print("✅ 2FA пароль принят!")
+                print(t("qr_2fa_accepted"))
                 break
             except Exception as e:
-                logger.error(f"Ошибка при авторизации по QR-коду: {e}")
+                logger.error(t("qr_error", error=e))
                 raise
 
     async def stop(self) -> None:
         """Stop application components cleanly."""
-        logger.info("🛑 Остановка сервисов TG-Voicer...")
+        logger.info(t("app_stopping"))
+        await self.network_manager.stop()
         self.realtime_listener.stop()
         await self.backfill_worker.stop()
         await self.client.disconnect()
+        self.db.close()
         self._shutdown_event.set()
-        logger.info("👋 Сессия Telegram безопасно завершена.")
+        logger.info(t("app_session_safe"))

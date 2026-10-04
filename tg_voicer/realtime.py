@@ -12,7 +12,9 @@ from telethon import TelegramClient, events, utils
 
 from .database import Database
 from .filters import FilterEngine
+from .network import NetworkManager, is_network_error
 from .transcriber import TelegramTranscriber
+from . import ui
 
 logger = logging.getLogger("tg_voicer.realtime")
 
@@ -26,11 +28,13 @@ class RealtimeListener:
         filter_engine: FilterEngine,
         transcriber: TelegramTranscriber,
         db: Database,
+        network_manager: Optional[NetworkManager] = None,
     ):
         self.client = client
         self.filter_engine = filter_engine
         self.transcriber = transcriber
         self.db = db
+        self.network_manager = network_manager
         self._handler_ref = None
 
     def start(self) -> None:
@@ -61,13 +65,22 @@ class RealtimeListener:
             logger.info("🛑 Real-time voice message listener stopped.")
 
     async def _process_live_message(self, message: events.NewMessage.Event) -> None:
-        try:
-            chat = await message.get_chat()
-            sender = await message.get_sender()
-        except Exception as e:
-            logger.debug(f"Failed to fetch chat or sender for live message {message.id}: {e}")
-            chat = None
-            sender = None
+        chat = None
+        sender = None
+        for attempt in range(2):
+            try:
+                chat = await message.get_chat()
+                sender = await message.get_sender()
+                break
+            except Exception as e:
+                if is_network_error(e):
+                    if self.network_manager:
+                        await self.network_manager.wait_for_connection()
+                    else:
+                        await asyncio.sleep(2)
+                else:
+                    logger.debug(f"Failed to fetch chat or sender for live message {message.id}: {e}")
+                    break
 
         should_proc, reason, media_type, duration, existing_text = self.filter_engine.should_process_message(
             message=message,
@@ -104,13 +117,26 @@ class RealtimeListener:
         if not should_proc:
             logger.debug(f"[LIVE IGNORED] Message {msg_id} in '{chat_title}': {reason}")
             # Optionally mark as skipped in DB
-            self.db.mark_message_skipped(chat_id, msg_id, reason)
+            self.db.mark_message_skipped(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                reason=reason,
+                media_type=media_type,
+                msg_date=message.date,
+                duration_sec=duration,
+                sender_id=message.sender_id,
+                sender_name=sender_name,
+                chat_title=chat_title,
+            )
             return
 
-        media_label = "🎤 Голосовое" if media_type == "voice" else "📹 Кружочек"
-        logger.info(
-            f"⚡ [LIVE] Поймано новое {media_label} ({duration:.1f}с) "
-            f"от {sender_name} в '{chat_title}' (id={msg_id}). Расшифровываем..."
+        ui.print_voice_found(
+            source="LIVE",
+            media_type=media_type or "voice",
+            duration=duration,
+            sender_name=sender_name,
+            chat_title=chat_title,
+            msg_id=msg_id,
         )
 
         # Pre-save message to DB
@@ -135,15 +161,9 @@ class RealtimeListener:
             is_live=True,
         )
 
-        if result.status == "done":
-            preview = result.text.replace("\n", " ") if result.text else ""
-            if len(preview) > 80:
-                preview = preview[:77] + "..."
-            if result.was_already_transcribed:
-                logger.info(f"⚡ [КЕШ TELEGRAM] Уже было расшифровано в Telegram: \"{preview}\"")
-            else:
-                logger.info(f"✅ [LIVE] Расшифровано: \"{preview}\"")
-        elif result.status == "pending":
-            logger.info("⏳ [LIVE] Запрос отправлен в Telegram. Обработка выполняется на сервере.")
-        else:
-            logger.warning(f"⚠️ [LIVE] Не удалось расшифровать: {result.error_message}")
+        ui.print_transcription_result(
+            text=result.text,
+            is_cached=result.was_already_transcribed,
+            status=result.status,
+            error=result.error_message,
+        )

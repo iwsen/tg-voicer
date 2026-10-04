@@ -17,7 +17,9 @@ from tg_voicer import __version__
 from tg_voicer.app import VoicerApp
 from tg_voicer.config import AppConfig, DEFAULT_CONFIG_TEMPLATE
 from tg_voicer.database import Database
-from tg_voicer.utils import print_stats_table, setup_logging
+from tg_voicer.i18n import set_language, t
+from tg_voicer.ui import console
+from tg_voicer.utils import print_stats_table, print_voice_heatmap, setup_logging
 
 
 def prompt_credentials_if_needed(config: AppConfig, config_path: Path) -> None:
@@ -26,25 +28,23 @@ def prompt_credentials_if_needed(config: AppConfig, config_path: Path) -> None:
         return
 
     print("\n" + "=" * 65)
-    print("🔑 Настройка Telegram API Credentials")
+    print(t("auth_header"))
     print("=" * 65)
-    print("Для работы Telegram Client требуются api_id и api_hash.")
-    print("Их можно получить бесплатно за 1 минуту на сайте:")
-    print(" 👉 https://my.telegram.org (раздел 'API development tools')\n")
+    print(t("auth_desc"))
 
     while not config.telegram.api_id:
-        val = input("Введите ваш api_id (число): ").strip()
+        val = input(t("auth_prompt_id")).strip()
         if val.isdigit():
             config.telegram.api_id = int(val)
         else:
-            print("❌ api_id должен быть целым числом!")
+            print(t("auth_err_id"))
 
     while not config.telegram.api_hash:
-        val = input("Введите ваш api_hash (32-значная строка): ").strip()
+        val = input(t("auth_prompt_hash")).strip()
         if len(val) >= 10:
             config.telegram.api_hash = val
         else:
-            print("❌ api_hash не может быть пустым!")
+            print(t("auth_err_hash"))
 
     # Save credentials into config.toml
     if config_path.exists():
@@ -54,7 +54,7 @@ def prompt_credentials_if_needed(config: AppConfig, config_path: Path) -> None:
         content = re.sub(r'api_id\s*=\s*\d+', f'api_id = {config.telegram.api_id}', content)
         content = re.sub(r'api_hash\s*=\s*["\'].*?["\']', f'api_hash = "{config.telegram.api_hash}"', content)
         config_path.write_text(content, encoding="utf-8")
-        print(f"✅ Данные успешно сохранены в {config_path}!\n")
+        print(t("auth_saved", path=config_path))
     else:
         # Create config.toml with credentials
         template = DEFAULT_CONFIG_TEMPLATE.replace(
@@ -63,64 +63,129 @@ def prompt_credentials_if_needed(config: AppConfig, config_path: Path) -> None:
             'api_hash = ""', f'api_hash = "{config.telegram.api_hash}"'
         )
         config_path.write_text(template, encoding="utf-8")
-        print(f"✅ Создан конфигурационный файл {config_path} с вашими данными!\n")
+        print(t("auth_created", path=config_path))
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tg-voicer",
-        description="Автоматическая расшифровка голосовых и кружочков в Telegram через Telegram Premium.",
+        description="Automated Telegram Premium speech-to-text transcriber for voice notes & video notes.",
     )
     parser.add_argument(
         "-c", "--config",
         dest="config_path",
         default="config.toml",
-        help="Путь к файлу конфигурации (по умолчанию: config.toml)",
+        help="Path to configuration file (default: config.toml)",
+    )
+    parser.add_argument(
+        "--lang", "--language",
+        dest="language",
+        choices=["en", "ru"],
+        default=None,
+        help="Interface and output language: 'en' (default) or 'ru'",
     )
     parser.add_argument(
         "--init-config",
         action="store_true",
-        help="Создать шаблон config.toml и выйти",
+        help="Generate default config.toml template and exit",
     )
     parser.add_argument(
         "--live-only",
         action="store_true",
-        help="Работать только на отлов новых голосовых (без сканирования истории)",
+        help="Listen only for new incoming voice notes (skip historical backfill)",
     )
     parser.add_argument(
         "--backfill-only",
         action="store_true",
-        help="Только пройтись по архивной истории и выйти по завершении",
+        help="Process historical chat messages only and exit upon completion",
     )
     parser.add_argument(
         "--reset-backfill",
         action="store_true",
-        help="Сбросить курсоры истории в базе (для повторного полного сканирования)",
+        help="Reset history scan cursors in database to re-scan all chats from start",
     )
     parser.add_argument(
         "--stats",
         action="store_true",
-        help="Вывести статистику расшифровок из базы данных и выйти",
+        help="Display transcription statistics, activity heatmap, and exit",
+    )
+    parser.add_argument(
+        "--heatmap",
+        action="store_true",
+        help="Display voice message recording date heatmap and activity metrics",
+    )
+    parser.add_argument(
+        "--heatmap-year",
+        type=int,
+        metavar="YEAR",
+        help="Filter activity calendar by specific year (e.g. 2024)",
+    )
+    parser.add_argument(
+        "--heatmap-weeks",
+        type=int,
+        metavar="WEEKS",
+        help="Number of weeks to display in activity calendar (default: adaptive)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Тестовый прогон: поиск сообщений и проверка фильтров без вызова API расшифровки",
+        help="Dry run: search messages and evaluate filters without calling transcription API",
     )
     parser.add_argument(
         "--auth-qr",
         action="store_true",
-        help="Авторизоваться через QR-код (по умолчанию)",
+        help="Authenticate using Telegram mobile QR code scan (default)",
     )
     parser.add_argument(
         "--auth-phone",
         action="store_true",
-        help="Авторизоваться по номеру телефона вместо QR-кода",
+        help="Authenticate using phone number and SMS code instead of QR code",
+    )
+    parser.add_argument(
+        "-d", "--daemon",
+        action="store_true",
+        help="Run TG-Voicer in background mode as a detached daemon",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop running TG-Voicer background daemon",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart TG-Voicer background daemon",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Check status of background daemon and display metrics",
+    )
+    parser.add_argument(
+        "--logs",
+        action="store_true",
+        help="View background daemon log file",
+    )
+    parser.add_argument(
+        "-f", "--follow",
+        action="store_true",
+        help="Follow log stream in real time (for --logs)",
+    )
+    parser.add_argument(
+        "-n", "--lines",
+        type=int,
+        default=50,
+        help="Number of recent log lines to display (default: 50, for --logs)",
+    )
+    parser.add_argument(
+        "--daemon-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Включить подробный отладочный вывод (DEBUG)",
+        help="Enable verbose DEBUG logging",
     )
     parser.add_argument(
         "--version",
@@ -136,18 +201,22 @@ async def main_async(args: argparse.Namespace) -> None:
     # Handle --init-config
     if args.init_config:
         if config_file.exists():
-            print(f"⚠️ Файл конфигурации уже существует: {config_file}")
+            print(f"⚠️ Configuration file already exists: {config_file}")
         else:
             AppConfig.create_default_template(config_file)
-            print(f"✅ Шаблон конфигурации создан: {config_file}")
+            print(f"✅ Default configuration template created: {config_file}")
         return
 
-    # Load configuration
+    # Create default config if missing
     if not config_file.exists():
         AppConfig.create_default_template(config_file)
-        print(f"ℹ️ Создан конфигурационный файл по умолчанию: {config_file}")
+        print(f"ℹ️ Created default configuration file: {config_file}")
 
     config = AppConfig.load(config_file)
+
+    if args.language:
+        config.language = args.language
+        set_language(args.language)
 
     if args.auth_phone:
         config.telegram.auth_method = "phone"
@@ -160,19 +229,36 @@ async def main_async(args: argparse.Namespace) -> None:
     # Setup logging
     setup_logging(config.logging)
 
+    # Handle --heatmap
+    if args.heatmap or ((args.heatmap_year is not None or args.heatmap_weeks is not None) and not args.stats):
+        db = Database(config.storage.db_path)
+        voice_stats = db.get_voice_date_stats(year=args.heatmap_year)
+        print_voice_heatmap(voice_stats, weeks=args.heatmap_weeks, target_year=args.heatmap_year)
+        db.close()
+        return
+
     # Handle --stats
     if args.stats:
         db = Database(config.storage.db_path)
         stats = db.get_stats()
+        voice_stats = db.get_voice_date_stats(year=args.heatmap_year)
         recent = db.get_recent_transcriptions(limit=10)
-        print_stats_table(stats, recent)
+        print_stats_table(
+            stats,
+            recent,
+            voice_stats=voice_stats,
+            heatmap_year=args.heatmap_year,
+            heatmap_weeks=args.heatmap_weeks,
+        )
+        db.close()
         return
 
     # Handle --reset-backfill
     if args.reset_backfill:
         db = Database(config.storage.db_path)
         count = db.reset_all_cursors()
-        print(f"✅ Курсоры истории сброшены для {count} чатов. При следующем запуске история будет просканирована заново.")
+        console.print(f"[bold green]{t('cursors_reset_msg', count=count)}[/bold green]")
+        db.close()
         return
 
     # Check credentials
@@ -208,11 +294,66 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    if args.language:
+        set_language(args.language)
+
+    # Handle daemon management commands before entering async loop:
+    if args.stop:
+        from tg_voicer.daemon import stop_daemon
+        stop_daemon(config_path=args.config_path, language=args.language)
+        sys.exit(0)
+
+    if args.status:
+        from tg_voicer.daemon import status_daemon
+        status_daemon(config_path=args.config_path, language=args.language)
+        sys.exit(0)
+
+    if args.logs:
+        from tg_voicer.daemon import view_logs
+        view_logs(lines=args.lines, follow=args.follow, config_path=args.config_path, language=args.language)
+        sys.exit(0)
+
+    extra_worker_args = []
+    if args.verbose:
+        extra_worker_args.append("-v")
+    if args.live_only:
+        extra_worker_args.append("--live-only")
+    if args.backfill_only:
+        extra_worker_args.append("--backfill-only")
+    if args.dry_run:
+        extra_worker_args.append("--dry-run")
+    if args.auth_phone:
+        extra_worker_args.append("--auth-phone")
+    if args.language:
+        extra_worker_args.extend(["--lang", args.language])
+
+    if args.restart:
+        from tg_voicer.daemon import restart_daemon
+        restart_daemon(config_path=args.config_path, extra_args=extra_worker_args, language=args.language)
+        sys.exit(0)
+
+    if args.daemon:
+        from tg_voicer.daemon import start_daemon
+        start_daemon(config_path=args.config_path, extra_args=extra_worker_args, language=args.language)
+        sys.exit(0)
+
+    # If running as the spawned background worker, manage PID file
+    if args.daemon_worker:
+        import atexit
+        from tg_voicer.daemon import write_pid, remove_pid
+        write_pid(os.getpid())
+        atexit.register(remove_pid)
+
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
-        print("\n👋 Программа завершена пользователем.")
+        console.print(f"\n[dim]{t('app_stopped_user')}[/dim]")
         sys.exit(0)
+    finally:
+        if args.daemon_worker:
+            from tg_voicer.daemon import remove_pid
+            remove_pid()
 
 
 if __name__ == "__main__":

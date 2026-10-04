@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime
+from collections import Counter
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class Database:
@@ -63,6 +64,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_proc_status ON processed_messages(status);
                 CREATE INDEX IF NOT EXISTS idx_proc_chat_id ON processed_messages(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_proc_created_at ON processed_messages(created_at);
+                CREATE INDEX IF NOT EXISTS idx_proc_msg_date ON processed_messages(msg_date);
 
                 CREATE TABLE IF NOT EXISTS chat_cursors (
                     chat_id INTEGER PRIMARY KEY,
@@ -198,20 +200,52 @@ class Database:
                 (error_message, chat_id, msg_id),
             )
 
-    def mark_message_skipped(self, chat_id: int, msg_id: int, reason: str) -> None:
+    def mark_message_skipped(
+        self,
+        chat_id: int,
+        msg_id: int,
+        reason: str,
+        media_type: Optional[str] = None,
+        msg_date: Optional[datetime] = None,
+        duration_sec: float = 0.0,
+        sender_id: Optional[int] = None,
+        sender_name: Optional[str] = None,
+        chat_title: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> None:
         conn = self._get_connection()
         with conn:
             conn.execute(
                 """
                 INSERT INTO processed_messages (
-                    chat_id, msg_id, status, error_message, updated_at
-                ) VALUES (?, ?, 'skipped', ?, CURRENT_TIMESTAMP)
+                    chat_id, msg_id, media_type, sender_id, sender_name,
+                    chat_title, chat_type, status, error_message, duration_sec,
+                    msg_date, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'skipped', ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chat_id, msg_id) DO UPDATE SET
+                    media_type = coalesce(excluded.media_type, processed_messages.media_type),
+                    sender_id = coalesce(excluded.sender_id, processed_messages.sender_id),
+                    sender_name = coalesce(excluded.sender_name, processed_messages.sender_name),
+                    chat_title = coalesce(excluded.chat_title, processed_messages.chat_title),
+                    chat_type = coalesce(excluded.chat_type, processed_messages.chat_type),
                     status = 'skipped',
                     error_message = excluded.error_message,
+                    duration_sec = coalesce(excluded.duration_sec, processed_messages.duration_sec),
+                    msg_date = coalesce(excluded.msg_date, processed_messages.msg_date),
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (chat_id, msg_id, reason),
+                (
+                    chat_id,
+                    msg_id,
+                    media_type,
+                    sender_id,
+                    sender_name,
+                    chat_title,
+                    chat_type,
+                    reason,
+                    duration_sec,
+                    msg_date.isoformat() if msg_date else None,
+                ),
             )
 
     def get_chat_cursor(self, chat_id: int) -> Optional[Dict[str, Any]]:
@@ -337,6 +371,8 @@ class Database:
         cur.execute("SELECT count(*) as cnt FROM chat_cursors")
         total_chats_cnt = cur.fetchone()["cnt"]
 
+        voice_date_stats = self.get_voice_date_stats()
+
         return {
             "transcribed_done": done_cnt,
             "transcribed_pending": pending_cnt,
@@ -345,6 +381,108 @@ class Database:
             "live_captured": live_cnt,
             "chats_total": total_chats_cnt,
             "chats_history_completed": completed_chats_cnt,
+            "voice_date_stats": voice_date_stats,
+        }
+
+    def get_voice_date_stats(self, year: Optional[int] = None) -> Dict[str, Any]:
+        """Aggregate statistics and heatmap metrics based on when voice messages were recorded (msg_date).
+
+        Args:
+            year: Optional calendar year filter (e.g. 2024). If None, all dates are considered.
+        """
+        conn = self._get_connection()
+        cur = conn.cursor()
+
+        query = """
+            SELECT msg_date, duration_sec, media_type, status
+            FROM processed_messages
+            WHERE msg_date IS NOT NULL
+        """
+        params: List[Any] = []
+        if year is not None:
+            query += " AND strftime('%Y', msg_date) = ?"
+            params.append(str(year))
+
+        query += " ORDER BY msg_date ASC"
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        if not rows:
+            return {
+                "total_with_date": 0,
+                "target_year": year,
+            }
+
+        parsed_entries = []
+        for r in rows:
+            raw_dt = r["msg_date"]
+            try:
+                dt = datetime.fromisoformat(raw_dt)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone()
+                dur = float(r["duration_sec"] or 0)
+                mtype = r["media_type"] or "voice"
+                status = r["status"]
+                parsed_entries.append((dt, dur, mtype, status))
+            except Exception:
+                continue
+
+        if not parsed_entries:
+            return {
+                "total_with_date": 0,
+                "target_year": year,
+            }
+
+        dates = [e[0] for e in parsed_entries]
+        durations = [e[1] for e in parsed_entries]
+        min_dt = min(dates)
+        max_dt = max(dates)
+        total_with_date = len(parsed_entries)
+
+        by_date: Counter[date] = Counter(d.date() for d in dates)
+        active_days = len(by_date)
+        total_span_days = max(1, (max_dt.date() - min_dt.date()).days + 1)
+
+        avg_per_active_day = total_with_date / active_days if active_days > 0 else 0.0
+        avg_per_day_span = total_with_date / total_span_days if total_span_days > 0 else 0.0
+
+        peak_day_date, peak_day_count = by_date.most_common(1)[0]
+
+        total_duration_sec = sum(durations)
+        avg_duration_sec = total_duration_sec / total_with_date if total_with_date > 0 else 0.0
+
+        by_dow: Counter[int] = Counter(d.weekday() for d in dates)
+        by_hour: Counter[int] = Counter(d.hour for d in dates)
+        by_dow_hour: Counter[Tuple[int, int]] = Counter((d.weekday(), d.hour) for d in dates)
+        by_year_month: Counter[Tuple[int, int]] = Counter((d.year, d.month) for d in dates)
+        all_years = sorted(set(d.year for d in dates))
+
+        # Recent 30 days metrics relative to latest recorded date
+        cutoff_30d = max_dt.date() - timedelta(days=30)
+        recent_30d_count = sum(cnt for d_date, cnt in by_date.items() if d_date >= cutoff_30d)
+        avg_recent_30d = recent_30d_count / 30.0
+
+        return {
+            "total_with_date": total_with_date,
+            "target_year": year,
+            "earliest_date": min_dt,
+            "latest_date": max_dt,
+            "total_span_days": total_span_days,
+            "active_days_count": active_days,
+            "avg_per_active_day": avg_per_active_day,
+            "avg_per_day_span": avg_per_day_span,
+            "peak_day_date": peak_day_date,
+            "peak_day_count": peak_day_count,
+            "total_duration_sec": total_duration_sec,
+            "avg_duration_sec": avg_duration_sec,
+            "by_date": by_date,
+            "by_dow": by_dow,
+            "by_hour": by_hour,
+            "by_dow_hour": by_dow_hour,
+            "by_year_month": by_year_month,
+            "all_years": all_years,
+            "recent_30d_count": recent_30d_count,
+            "avg_recent_30d": avg_recent_30d,
         }
 
     def get_recent_transcriptions(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -362,3 +500,13 @@ class Database:
             (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
+
+    def close(self) -> None:
+        """Close current thread's database connection if open."""
+        if hasattr(self._local, "conn") and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+
