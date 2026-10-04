@@ -30,6 +30,9 @@ api_hash = ""
 # Название сессии (сохраняется в data/session_name.session)
 session_name = "tg_voicer"
 
+# Способ первой авторизации: "qr" (через QR-код в приложении) или "phone" (по номеру и коду)
+auth_method = "qr"
+
 # Расшифровывать голосовые сообщения (.ogg / .opus)
 transcribe_voice = true
 
@@ -139,6 +142,7 @@ class TelegramConfig:
     api_id: int = 0
     api_hash: str = ""
     session_name: str = "tg_voicer"
+    auth_method: str = "qr"
     transcribe_voice: bool = True
     transcribe_video_notes: bool = True
     transcribe_outgoing: bool = False
@@ -245,6 +249,8 @@ class AppConfig:
             self.telegram.api_hash = str(tg["api_hash"]).strip()
         if "session_name" in tg:
             self.telegram.session_name = str(tg["session_name"]).strip()
+        if "auth_method" in tg:
+            self.telegram.auth_method = str(tg["auth_method"]).strip().lower()
         if "transcribe_voice" in tg:
             self.telegram.transcribe_voice = bool(tg["transcribe_voice"])
         if "transcribe_video_notes" in tg:

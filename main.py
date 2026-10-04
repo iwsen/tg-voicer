@@ -108,6 +108,16 @@ def parse_args() -> argparse.Namespace:
         help="Тестовый прогон: поиск сообщений и проверка фильтров без вызова API расшифровки",
     )
     parser.add_argument(
+        "--auth-qr",
+        action="store_true",
+        help="Авторизоваться через QR-код (по умолчанию)",
+    )
+    parser.add_argument(
+        "--auth-phone",
+        action="store_true",
+        help="Авторизоваться по номеру телефона вместо QR-кода",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Включить подробный отладочный вывод (DEBUG)",
@@ -138,6 +148,11 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"ℹ️ Создан конфигурационный файл по умолчанию: {config_file}")
 
     config = AppConfig.load(config_file)
+
+    if args.auth_phone:
+        config.telegram.auth_method = "phone"
+    elif args.auth_qr:
+        config.telegram.auth_method = "qr"
 
     if args.verbose:
         config.logging.level = "DEBUG"
